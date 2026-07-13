@@ -1,0 +1,170 @@
+---
+title: "Threshold Selection: Using perch() and murmuration_plot()"
+subtitle: "Understanding and calibrating the Fellegi-Sunter linkage cutoff"
+author: "Dr Nicolas Smoll, SCPHU, Sunshine Coast Hospital and Health Service"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+  pdf_document:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Threshold Selection with perch()}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  message  = FALSE,
+  warning  = FALSE,
+  fig.width  = 8,
+  fig.height = 5
+)
+```
+
+## Why the threshold matters
+
+In the Fellegi-Sunter probabilistic linkage framework, every candidate pair of
+records receives a composite log-likelihood ratio score. Pairs scoring above a
+chosen threshold are classified as matches; those below are classified as
+non-matches. This threshold is **dataset-specific** — there is no universal
+correct value, because the score scale depends entirely on which variables are
+compared, their quality, and the composition of the two datasets being linked.
+
+Choosing the threshold too low increases recall (more true matches recovered)
+at the cost of precision (more false matches accepted). Choosing it too high
+does the reverse. The optimal value sits in the **valley between the bimodal
+score distribution** — the gap between the non-match cluster at low scores and
+the match cluster at high scores.
+
+`starling` provides two complementary tools:
+
+- **`murmuration_plot()`** — shows the full weight distribution visually so you
+  can see where the valley is
+- **`perch()`** — quantifies match count, link rate, and clerical burden at
+  each candidate cutoff, annotated with AIHW, WA Data Linkage Unit, and PHRN
+  reference benchmarks
+
+---
+
+## Australian linkage authority benchmarks
+
+The three key Australian and international reference points:
+
+| Threshold range | Authority | Basis |
+|---|---|---|
+| **10–20 (clerical zone)** | AIHW / WA Data Linkage Unit (WADLU) | Standard two-threshold practice: confirmed matches above ~20, confirmed non-matches below ~10, marginal pairs sent for human adjudication |
+| **~15–20** | Population Health Research Network (PHRN) | Operational target: false-match rate < 0.5% with a full variable set (Medicare + 2 names + DOB) |
+| **17** | starling default | Balanced starting point for SCPHU routine surveillance linkage |
+
+These are reference points, not rules. The correct threshold for your dataset
+is the one that sits in the valley of your score distribution.
+
+---
+
+## Example: running perch() on scored pairs
+
+```{r perch-demo}
+library(starling)
+
+# Simulate a scored pairs object (bimodal: non-matches low, matches high)
+set.seed(20260624L)
+n_nonmatch <- 800
+n_match    <- 200
+pairs_pred <- data.frame(
+  weights = c(
+    rnorm(n_nonmatch, mean = 5,  sd = 3),   # non-match cluster
+    rnorm(n_match,    mean = 20, sd = 3)    # match cluster
+  )
+)
+
+# Run the sensitivity sweep
+results <- perch(
+  pairs_pred    = pairs_pred,
+  n_records_df1 = 250L,         # size of the primary dataset
+  thresholds    = seq(5, 28, by = 1),
+  report        = TRUE,
+  plot          = FALSE          # set TRUE in interactive session
+)
+```
+
+The `[*]` markers in the table show the four reference threshold values from
+AIHW, PHRN, and the starling default.
+
+---
+
+## Example: visualising the score distribution
+
+```{r plot, fig.cap = "Linkage weight distribution. The threshold line should sit in the valley between the two clusters."}
+murmuration_plot(pairs_pred, threshold = 17, show_density = FALSE,
+                 palette = "sch")
+```
+
+A well-behaved distribution is clearly bimodal. If yours is not:
+
+- **Unimodal at low scores**: almost all pairs are non-matches. Check that your
+  blocking variable is not too restrictive, excluding true match candidates from
+  ever being compared.
+- **Unimodal at high scores**: unusual. Suggests a highly specific blocking
+  variable that only passes near-certain matches.
+- **Flat / no clear valley**: the comparison variables may lack discriminating
+  power. Review `preflight()` output for high missingness or poor name quality.
+
+---
+
+## Using `perch_before_linking = TRUE` inside `murmuration()`
+
+For the common one-step workflow, set `perch_before_linking = TRUE` in the
+`murmuration()` call. The sensitivity table is printed immediately after the EM
+model fits — before the threshold is applied — giving you a chance to review
+before the linked dataset is produced.
+
+```{r perch-inside, eval = FALSE}
+linked <- murmuration(
+  df1                  = cases_blocked,
+  df2                  = vax_blocked,
+  linkage_type         = "v2c",
+  event_date           = "onset_date",
+  id_var               = "id_var",
+  blocking_var         = "block1",
+  compare_vars         = c("lettername1", "lettername2", "dob", "medicare10"),
+  threshold_value      = 17,
+  perch_before_linking = TRUE     # <-- prints the perch() table mid-linkage
+)
+```
+
+In a Quarto document or batch job (`interactive() == FALSE`), the table is
+printed to the console but the plot is suppressed and execution continues
+automatically. In an interactive session, the plot is displayed.
+
+If the table suggests a better threshold (say 19), re-run `murmuration()` with
+the new value. The EM model must be re-fitted — the scored pairs are not stored
+between calls. This is by design: `murmuration()` is a single-step function.
+
+---
+
+## Clerical review zone
+
+In a formal two-threshold design (AIHW/WADLU practice), pairs in the 10–20
+zone are neither automatically accepted nor rejected — they are sent for human
+review. The `n_clerical` column in `perch()` output shows how many pairs fall
+in the review zone around each candidate threshold (default window: ±3 units).
+
+A large `n_clerical` relative to `n_above` means the threshold sits in a
+high-density region — small threshold changes would reclassify many pairs. This
+is a signal that you are sitting on a slope, not in a valley.
+
+---
+
+## Session information
+
+```{r session}
+sessionInfo()
+```

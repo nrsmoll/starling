@@ -1,0 +1,303 @@
+---
+title: "Linked Cohort Analysis: Linking Case Records to Vaccination History"
+subtitle: "A complete starling workflow from preflight to perch"
+author: "Dr Nicolas Smoll, SCPHU, Sunshine Coast Hospital and Health Service"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+  pdf_document:
+    toc: true
+    toc_depth: 3
+vignette: >
+  %\VignetteIndexEntry{Linked Cohort Analysis}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  message  = FALSE,
+  warning  = FALSE,
+  eval     = FALSE,      # chunks are illustrative: reclin2 not available at build time
+  fig.width  = 8,
+  fig.height = 5
+)
+```
+
+## Overview
+
+This vignette demonstrates the complete `starling` probabilistic record linkage
+workflow: from pre-linkage data quality assessment through blocking variable
+construction, threshold sensitivity analysis, linkage, and post-linkage
+validation. The scenario mirrors a routine SCPHU task: linking a notifiable
+disease linelist (EDIS extracts) to the Australian Immunisation Register (AIR)
+to determine vaccination status at the time of disease onset.
+
+The datasets used (`cases_notifiable` and `vax_air`) are synthetic — no real
+person data. They include deliberate data quality issues (name typos, corrupted
+Medicare numbers) to demonstrate how the starling toolkit handles real-world
+messiness.
+
+```{r load}
+library(starling)
+
+data(cases_notifiable)
+data(vax_air)
+
+cat("Cases linelist:      ", nrow(cases_notifiable), "records\n")
+cat("Vaccination register:", nrow(vax_air),           "records\n")
+cat("True matches (known):", sum(!is.na(cases_notifiable$true_link_id)), "\n")
+```
+
+---
+
+## Step 1: Pre-linkage audit with `preflight()`
+
+Before generating a single candidate pair, `preflight()` runs a structured
+battery of checks across both datasets: completeness of linkage variables,
+duplicate identifiers, date plausibility, Medicare validity, name field quality,
+and factor-level consistency.
+
+```{r preflight}
+audit <- preflight(
+  data1        = cases_notifiable,
+  data2        = vax_air,
+  linkage_vars = c("lettername1", "lettername2", "dob", "medicare10"),
+  id_col1      = "id_var",
+  id_col2      = "id_var",
+  date_cols    = c("dob", "onset_date"),
+  medicare_col = "medicare10"
+)
+```
+
+The audit flags include:
+- Any linkage variables with missingness above 10%
+- Duplicate ID values in either dataset
+- Medicare numbers that fail the Modulus 10 checksum
+- Date values before 1900 or after today
+
+---
+
+## Step 2: Medicare checksum validation with `check_medicare()`
+
+The `preflight()` report includes Medicare validity, but `check_medicare()` can
+also be called standalone for a more detailed summary and to add the validation
+flag column for downstream use.
+
+```{r medicare}
+# Validate cases
+cases_checked <- check_medicare(cases_notifiable,
+                                medicare_col = "medicare10",
+                                output_col   = "medicare_valid",
+                                verbose      = TRUE)
+
+# Confirm AIR Medicare numbers are all valid
+vax_checked <- check_medicare(vax_air,
+                              medicare_col = "medicare10",
+                              output_col   = "medicare_valid",
+                              verbose      = TRUE)
+
+# Replace corrupted Medicare numbers with NA before linkage
+# so they don't negatively score a true match
+cases_checked$medicare10 <- ifelse(
+  cases_checked$medicare_valid == 1L,
+  cases_checked$medicare10,
+  NA_character_
+)
+```
+
+The cases dataset has ~10% corrupted Medicare numbers by design. Setting those
+to `NA` before linkage is better than passing an invalid number, because the EM
+algorithm treats `NA` as "not observed" (no contribution to the score, positive
+or negative), whereas an invalid number that happens to match a wrong AIR record
+would add spurious positive weight.
+
+---
+
+## Step 3: Blocking variable construction with `flock()`
+
+`flock()` creates blocking keys that partition both datasets into candidate
+comparison groups. `murmuration()` only compares pairs within the same block,
+making the search tractable for large datasets.
+
+```{r flock}
+# Extract birth year for composite blocking
+cases_blocked <- flock(cases_checked,
+                       block1_vars    = "gender",
+                       block2_vars    = "gender",
+                       block3_vars    = "postcode",
+                       birth_year_col = "dob")
+
+vax_blocked   <- flock(vax_checked,
+                       block1_vars    = "gender",
+                       block2_vars    = "gender",
+                       block3_vars    = "postcode",
+                       birth_year_col = "dob")
+
+# Summary of blocking key distributions
+cat("block1 (gender) — unique values in cases:", 
+    dplyr::n_distinct(cases_blocked$block1), "\n")
+cat("block3 (postcode) — unique values in cases:", 
+    dplyr::n_distinct(cases_blocked$block3), "\n")
+```
+
+For this small synthetic dataset we use `block1` (gender only). For large
+production datasets (> 100 000 records), use multi-pass blocking: run
+`murmuration()` separately with `block1` and `block3`, then union the results.
+
+---
+
+## Step 4: Threshold sensitivity analysis with `perch()`
+
+Before committing to a threshold, we can use `perch()` standalone to understand
+the score landscape. Alternatively, `murmuration(perch_before_linking = TRUE)`
+calls `perch()` automatically mid-linkage after the EM model fits.
+
+```{r perch-standalone, eval = FALSE}
+# This would require running the EM model first —
+# see the murmuration() call below which does this in one step.
+# For standalone use on a pre-scored pairs object:
+
+# pairs <- reclin2::pair_blocking(cases_blocked, vax_blocked, "block1")
+# reclin2::compare_pairs(pairs,
+#   on = c("lettername1", "lettername2", "dob", "medicare10"),
+#   default_comparator = reclin2::jaro_winkler(0.9), inplace = TRUE)
+# m          <- reclin2::problink_em(
+#   ~ lettername1 + lettername2 + dob + medicare10, data = pairs)
+# pairs_pred <- predict(m, pairs = pairs, add = TRUE)
+#
+# perch(pairs_pred, n_records_df1 = nrow(cases_blocked),
+#       thresholds = seq(8, 25, by = 1))
+```
+
+The threshold guidance from Australian linkage authorities:
+
+| Range | Source | Meaning |
+|---|---|---|
+| 10–20 | AIHW / WA Data Linkage Unit | Clerical review zone |
+| 15–20 | PHRN | Operational target for <0.5% false-match rate |
+| 17 | starling default | Balanced for routine surveillance |
+
+---
+
+## Step 5: Probabilistic linkage with `murmuration()`
+
+`murmuration()` runs the complete Fellegi-Sunter EM linkage pipeline in one
+call. We use `perch_before_linking = TRUE` to inspect the score distribution
+before the threshold is applied.
+
+```{r murmuration}
+linked <- murmuration(
+  df1                  = cases_blocked,
+  df2                  = vax_blocked,
+  linkage_type         = "v2c",
+  event_date           = "onset_date",
+  id_var               = "id_var",
+  blocking_var         = "block1",
+  compare_vars         = c("lettername1", "lettername2", "dob", "medicare10"),
+  threshold_value      = 17,
+  perch_before_linking = FALSE,   # set TRUE in interactive sessions to inspect
+  days_allowed_before_event = 14,
+  clean_eggs           = TRUE
+)
+
+cat("Linked records:      ", nrow(linked), "\n")
+cat("With vaccination:    ", sum(!is.na(linked$vax_date_1)), "\n")
+cat("Without vaccination: ", sum( is.na(linked$vax_date_1)), "\n")
+```
+
+---
+
+## Step 6: Visualise the score distribution with `murmuration_plot()`
+
+Even if `perch_before_linking = FALSE` during the linkage call, we can still
+inspect the weight distribution afterwards by accessing the `weights` column on
+the linked output.
+
+```{r plot, fig.cap = "Linkage weight distribution. The threshold (dashed line) should sit in the valley between the two score clusters."}
+# The linked output retains the weights column when clean_eggs = TRUE
+# For the visualisation, we use the weights from the linked data frame
+if ("weights" %in% names(linked)) {
+  murmuration_plot(linked, threshold = 17, show_density = FALSE,
+                   palette = "sch")
+}
+```
+
+---
+
+## Step 7: Post-linkage validation
+
+Because `cases_notifiable` contains `true_link_id` (the ground-truth match
+identifier), we can compute recall and precision on the synthetic data. This
+step is only possible with synthetic data — in production, post-linkage
+validation requires a clerical review sample.
+
+```{r validate}
+# Recall: proportion of true matches recovered
+true_positives <- sum(
+  !is.na(linked$true_link_id) &
+  !is.na(linked$id_var_df2) &
+  linked$true_link_id == linked$id_var_df2,
+  na.rm = TRUE
+)
+total_true_matches <- sum(!is.na(cases_notifiable$true_link_id))
+recall <- true_positives / total_true_matches
+
+# Precision: proportion of accepted links that are true matches
+total_links <- sum(!is.na(linked$id_var_df2))
+precision   <- true_positives / total_links
+
+cat(sprintf("Recall:    %.1f%%  (%d / %d true matches recovered)\n",
+            recall * 100, true_positives, total_true_matches))
+cat(sprintf("Precision: %.1f%%  (%d / %d links are true matches)\n",
+            precision * 100, true_positives, total_links))
+cat(sprintf("F1 score:  %.3f\n",
+            2 * precision * recall / (precision + recall)))
+```
+
+---
+
+## Summary: the complete starling workflow
+
+```{r workflow-summary, eval = FALSE}
+library(starling)
+data(cases_notifiable); data(vax_air)
+
+# 1. Pre-linkage audit
+preflight(cases_notifiable, vax_air,
+          linkage_vars = c("lettername1", "lettername2", "dob", "medicare10"),
+          medicare_col = "medicare10")
+
+# 2. Medicare validation — replace invalid numbers with NA
+cases <- check_medicare(cases_notifiable)
+cases$medicare10 <- ifelse(cases$medicare_valid == 1L, cases$medicare10, NA_character_)
+
+# 3. Blocking variables
+cases <- flock(cases, block1_vars = "gender", birth_year_col = "dob")
+vax   <- flock(vax_air, block1_vars = "gender", birth_year_col = "dob")
+
+# 4. Link (perch_before_linking = TRUE in interactive sessions)
+linked <- murmuration(cases, vax,
+  linkage_type    = "v2c",
+  event_date      = "onset_date",
+  id_var          = "id_var",
+  blocking_var    = "block1",
+  compare_vars    = c("lettername1", "lettername2", "dob", "medicare10"),
+  threshold_value = 17)
+
+# 5. Pass to mudnester or bowerbird for downstream analysis
+```
+
+---
+
+## Session information
+
+```{r session, eval = TRUE}
+sessionInfo()
+```

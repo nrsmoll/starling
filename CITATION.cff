@@ -1,0 +1,60 @@
+cff-version: 1.2.0
+message: >
+  If you use starling in your work, please cite it using the metadata below.
+title: "starling: Probabilistic Record Linkage for Public Health Surveillance"
+authors:
+  - family-names: Smoll
+    given-names: Nicolas L
+    orcid: "https://orcid.org/0000-0002-6923-9701"
+    affiliation: >
+      Sunshine Coast Public Health Unit, Sunshine Coast Hospital and Health
+      Service, Queensland, Australia
+version: 1.0.0
+date-released: "2026-06-24"
+license: MIT
+url: "https://github.com/SCPHU/starling"
+repository-code: "https://github.com/SCPHU/starling"
+abstract: >
+  starling performs probabilistic record linkage for public health surveillance
+  datasets using the Fellegi-Sunter framework (via reclin2). Provides tools for
+  pre-linkage data quality auditing, Medicare number checksum validation, blocking
+  variable construction, linkage weight visualisation, threshold sensitivity
+  analysis (perch()), and the murmuration() linkage engine supporting four linkage
+  types: case-to-hospitalisation, vaccination-to-case, vaccination-to-
+  hospitalisation, and vaccination-to-event. Part of the aviary ecosystem for
+  public health surveillance in R.
+keywords:
+  - record-linkage
+  - probabilistic-linkage
+  - public-health
+  - surveillance
+  - epidemiology
+  - Australia
+  - Medicare
+  - vaccination
+references:
+  - type: article
+    authors:
+      - family-names: Fellegi
+        given-names: Ivan P
+      - family-names: Sunter
+        given-names: Alan B
+    title: "A Theory for Record Linkage"
+    journal: "Journal of the American Statistical Association"
+    volume: 64
+    issue: 328
+    pages: "1183-1210"
+    year: 1969
+    doi: "10.2307/2286061"
+  - type: book
+    authors:
+      - family-names: Herzog
+        given-names: Thomas N
+      - family-names: Scheuren
+        given-names: Fritz J
+      - family-names: Winkler
+        given-names: William E
+    title: "Data Quality and Record Linkage Techniques"
+    publisher: Springer
+    year: 2007
+    isbn: "978-0-387-69502-0"
