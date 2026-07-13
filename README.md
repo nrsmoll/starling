@@ -1,4 +1,4 @@
-# starling <img src="man/figures/logo.png" align="right" height="139" alt="starling hex logo" />
+# (*)>
 
 **Probabilistic Record Linkage for Public Health Surveillance**
 
